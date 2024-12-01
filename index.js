@@ -3,7 +3,7 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
 require("dotenv").config();
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const app = express();
 const port = process.env.PORT || 5000;
 
@@ -27,6 +27,8 @@ async function run() {
     // await client.connect();
     const database = client.db("gym-management");
     const usersCollection = database.collection("users");
+    const trainersCollection = database.collection("trainers");
+    const classesCollection = database.collection("classes");
 
     // jwt related api
     app.post("/jwt", async (req, res) => {
@@ -39,6 +41,7 @@ async function run() {
 
     // middlewares
     const verifyToken = (req, res, next) => {
+      const authorization = req.headers;
       if (!req.headers.authorization) {
         return res.status(401).send({ message: "unauthorized access" });
       }
@@ -119,19 +122,189 @@ async function run() {
           const { name, email, role } = user;
 
           // Send a success response
-          res
-            .status(201)
-            .json({
-              user: { name, email, role },
-              token,
-              message: "Login successful",
-            });
+          res.status(201).json({
+            user: { name, email, role },
+            token,
+            message: "Login successful",
+          });
         } else {
           res.status(400).json({ message: "password is incorrect" });
         }
       } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    // Trainer API: Add a new trainer (Protected)
+    app.post("/trainers", verifyToken, async (req, res) => {
+      const { avatar, name, role, subject, description, gender } = req.body;
+
+      // Check if the user is an admin
+      if (req.decoded.role !== "admin") {
+        return res
+          .status(403)
+          .json({ message: "Forbidden: Admin access required" });
+      }
+
+      if (!avatar || !name || !role || !subject || !description || !gender) {
+        return res.status(400).json({ message: "All fields are required" });
+      }
+
+      try {
+        const trainer = { avatar, name, role, subject, description, gender };
+        const result = await trainersCollection.insertOne(trainer);
+
+        res.status(201).json({
+          message: "Trainer added successfully",
+          trainer: result,
+        });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Failed to add trainer" });
+      }
+    });
+
+    // Trainer API: Get all trainers (Public)
+    app.get("/trainers", async (req, res) => {
+      try {
+        const trainers = await trainersCollection.find().toArray();
+        res.status(200).json(trainers);
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Failed to retrieve trainers" });
+      }
+    });
+
+    // Get a single trainer by ID (Protected)
+    app.get("/trainers/:id", verifyToken, async (req, res) => {
+      const { id } = req.params;
+
+      // Check if the user is an admin
+      if (req.decoded.role !== "admin") {
+        return res
+          .status(403)
+          .json({ message: "Forbidden: Admin access required" });
+      }
+
+      try {
+        const trainer = await trainersCollection.findOne({
+          _id: new ObjectId(id),
+        });
+        if (trainer) {
+          res.status(200).json(trainer);
+        } else {
+          res.status(404).json({ message: "Trainer not found" });
+        }
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Failed to retrieve trainer" });
+      }
+    });
+
+    // Update a trainer (Protected)
+    app.put("/trainers/:id", verifyToken, async (req, res) => {
+      const { id } = req.params;
+      const { avatar, name, role, subject, description, gender } = req.body;
+
+      // Check if the user is an admin
+      if (req.decoded.role !== "admin") {
+        return res
+          .status(403)
+          .json({ message: "Forbidden: Admin access required" });
+      }
+
+      try {
+        const updatedTrainer = {
+          avatar,
+          name,
+          role,
+          subject,
+          description,
+          gender,
+        };
+        const result = await trainersCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updatedTrainer }
+        );
+
+        if (result.matchedCount === 1) {
+          res
+            .status(200)
+            .json({ message: "Trainer updated successfully", result });
+        } else {
+          res.status(404).json({ message: "Trainer not found" });
+        }
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Failed to update trainer" });
+      }
+    });
+
+    // Trainer API: Delete a trainer (Protected)
+    app.delete("/trainers/:id", verifyToken, async (req, res) => {
+      const { id } = req.params;
+
+      // Check if the user is an admin
+      if (req.decoded.role !== "admin") {
+        return res
+          .status(403)
+          .json({ message: "Forbidden: Admin access required" });
+      }
+
+      try {
+        const result = await trainersCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+
+        if (result.deletedCount === 1) {
+          res
+            .status(200)
+            .json({ message: "Trainer deleted successfully", result });
+        } else {
+          res.status(404).json({ message: "Trainer not found", result });
+        }
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Failed to delete trainer" });
+      }
+    });
+
+    // Class API: Create a new class
+    app.post("/classes", verifyToken, async (req, res) => {
+      const { name, time, trainer, img, day } = req.body;
+
+      // Check if the user is an admin
+      if (req.decoded.role !== "admin") {
+        return res
+          .status(403)
+          .json({ message: "Forbidden: Admin access required" });
+      }
+
+      // Validate required fields
+      if (!name || !time || !trainer || !day) {
+        return res.status(400).json({ message: "All fields are required" });
+      }
+
+      try {
+        const newClass = { name, time, trainer, img, day };
+        const result = await classesCollection.insertOne(newClass);
+        res
+          .status(201)
+          .json({ message: "Class scheduled successfully", result });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Failed to schedule class" });
+      }
+    });
+    // Fetch all scheduled classes
+    app.get("/classes", async (req, res) => {
+      try {
+        const classes = await classesCollection.find().toArray();
+        res.status(200).json(classes);
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Failed to retrieve classes" });
       }
     });
   } finally {
