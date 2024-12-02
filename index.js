@@ -79,7 +79,7 @@ async function run() {
         };
 
         // Save the user to the database
-        await usersCollection.insertOne(user);
+        const response = await usersCollection.insertOne(user);
 
         // Generate a JWT
         const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
@@ -88,7 +88,7 @@ async function run() {
 
         // Send a success response
         res.status(201).json({
-          user: { name, email, role },
+          user: {_id: response.insertedId, name, email, role },
           token,
           message: "Successfully registered",
         });
@@ -119,11 +119,11 @@ async function run() {
           });
 
           // Get the user data
-          const { name, email, role } = user;
+          const { _id ,name, email, role } = user;
 
           // Send a success response
           res.status(201).json({
-            user: { name, email, role },
+            user: {_id, name, email, role },
             token,
             message: "Login successful",
           });
@@ -272,7 +272,7 @@ async function run() {
 
     // Class API: Create a new class
     app.post("/classes", verifyToken, async (req, res) => {
-      const { name, time, trainer, img, day } = req.body;
+      const { name, time, trainer, img, day, bookedTrainees } = req.body;
 
       // Check if the user is an admin
       if (req.decoded.role !== "admin") {
@@ -287,7 +287,7 @@ async function run() {
       }
 
       try {
-        const newClass = { name, time, trainer, img, day };
+        const newClass = { name, time, trainer, img, day , bookedTrainees};
         const result = await classesCollection.insertOne(newClass);
         res
           .status(201)
@@ -307,6 +307,160 @@ async function run() {
         res.status(500).json({ message: "Failed to retrieve classes" });
       }
     });
+
+    // Class Api: get all classes by day
+    app.get("/classes/by-day", async (req, res) => {
+      try {
+        // Fetch all classes from the database
+        const classes = await classesCollection.find().toArray();
+    
+        // Fetch all trainers and create a mapping by trainer ID
+        const trainers = await trainersCollection.find().toArray();
+        const trainerMap = trainers.reduce((acc, trainer) => {
+          acc[trainer._id] = {
+            id: trainer._id,
+            name: trainer.name,
+            subject: trainer.subject,
+            avatar: trainer.avatar,
+          };
+          return acc;
+        }, {});
+    
+        // Transform classes into a structure grouped by day
+        const classesByDay = classes.reduce((acc, classItem) => {
+          const { day, trainer, ...rest } = classItem;
+    
+          // Attach trainer details from the trainerMap
+          const trainerDetails = trainerMap[trainer] || {};
+    
+          const classWithTrainer = {
+            ...rest,
+            trainer: trainerDetails,
+          };
+    
+          if (!acc[day]) {
+            acc[day] = [];
+          }
+    
+          acc[day].push(classWithTrainer);
+          return acc;
+        }, {});
+    
+        res.status(200).json(classesByDay);
+      } catch (error) {
+        console.error("Error fetching classes by day:", error);
+        res.status(500).json({ message: "Failed to retrieve classes" });
+      }
+    });
+    
+    // Class Api: reserve class
+    app.put("/classes/:classId/reserve", async (req, res) => {
+      try {
+        const { classId } = req.params;
+        const { userId } = req.body;
+    
+        if (!userId) {
+          return res.status(400).json({ message: "User ID is required" });
+        }
+    
+        // Find the class to check reservations
+        const classItem = await classesCollection.findOne({ _id: new ObjectId(classId) });
+    
+        if (!classItem) {
+          return res.status(404).json({ message: "Class not found" });
+        }
+    
+        // Check if the user has already reserved
+        if (classItem.bookedTrainees.includes(userId)) {
+          return res.status(400).json({ message: "You have already reserved this class" });
+        }
+    
+        // Check if the class is fully booked
+        if (classItem.bookedTrainees.length >= 10) {
+          return res.status(400).json({ message: "Class is fully reserved" });
+        }
+    
+        // Add the user ID to the bookedTrainees array
+        const result = await classesCollection.updateOne(
+          { _id: new ObjectId(classId) },
+          { $addToSet: { bookedTrainees: userId } } // $addToSet ensures no duplicates
+        );
+    
+        if (result.modifiedCount === 0) {
+          return res.status(500).json({ message: "Failed to reserve the class" });
+        }
+    
+        res.status(200).json({ message: "Class reserved successfully" });
+      } catch (error) {
+        console.error("Error reserving class:", error);
+        res.status(500).json({ message: "Failed to reserve class" });
+      }
+    });
+    
+    // Class Api: get classes with trainee details
+    app.get("/classes-with-trainees", async (req, res) => {
+      try {
+        // Fetch classes
+        const classes = await classesCollection.find().toArray();
+    
+        // Populate booked trainees for each class
+        const populatedClasses = await Promise.all(
+          classes.map(async (classItem) => {
+            if (classItem.bookedTrainees && classItem.bookedTrainees.length > 0) {
+              const trainees = await usersCollection
+                .find({ _id: { $in: classItem.bookedTrainees.map((id) => new ObjectId(id)) } })
+                .toArray();
+              return { ...classItem, bookedTrainees: trainees };
+            }
+            return { ...classItem, bookedTrainees: [] };
+          })
+        );
+    
+        res.status(200).json(populatedClasses);
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Failed to retrieve classes with trainees" });
+      }
+    });
+    
+    // Class Api: classes by user
+  app.get("/booked-classes/:userId", async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    // Fetch classes where the user's ID exists in the `bookedTrainees` array
+    const bookedClasses = await classesCollection
+      .find({ bookedTrainees: userId })
+      .toArray();
+
+    // Populate trainer details from `usersCollection`
+    const userIds = bookedClasses.map((classItem) => classItem.trainer);
+    const trainers = await trainersCollection
+      .find({ _id: { $in: userIds.map((id) => new ObjectId(id)) } })
+      .toArray();
+
+    // Map trainers to their respective classes
+    const enrichedClasses = bookedClasses.map((classItem) => {
+      const trainer = trainers.find(
+        (trainer) => trainer._id.toString() === classItem.trainer
+      );
+      return {
+        ...classItem,
+        trainer: {
+          name: trainer?.name || "Unknown",
+          email: trainer?.email || "N/A",
+        },
+      };
+    });
+
+    res.status(200).json(enrichedClasses);
+  } catch (error) {
+    console.error("Error fetching booked classes:", error);
+    res.status(500).json({ message: "Failed to retrieve booked classes." });
+  }
+});
+
+  
   } finally {
     // await client.close(console.log("database is closed"));
   }
