@@ -108,7 +108,7 @@ Start the server
 
 ## Demo
 
-Live Api link: [https://merajfaizan.vercel.app/]
+Live Api link: [https://gym-management-backend-kappa.vercel.app/]
 
 ## Documentation
 
